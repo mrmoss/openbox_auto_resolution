@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+'''
+Terrible openbox auto resolution configuration thingy.
+
+Dependencies:
+  sudo package-manager install feh xrandr
+  sudo pip3 install parse
+'''
+
+import os
+import parse
+import pprint
+import subprocess
+import sys
+import time
+
+#Parsing ints/floats from left side (ignoring invalid symboles on the right)
+def get_from_string_left(string,ch_set='0123456789.'):
+	digits=''
+	for ch in string:
+		if ch not in ch_set:
+			break
+		digits+=ch
+	return digits
+
+#Returns an array of objects that look like (super hacky...):
+#  {
+#    'name':'HDMI1',                            #Device name
+#    'state':'disconnected'|'connected',        #If device is connected or not
+#    'primary':True,                            #Is set to as a primary scren
+#    'active':['h':2160,'w':3840,'x':0,'y':0],  #Current resolution and position
+#    'modes':[{                                 #Listed modes
+#      'resolution':[3840,2160],                #Mode resolution
+#      'frequencies':[60.00,30.00,24.00]        #Mode frequencies
+#    }....],
+#    'frequency':60.00,                         #Current set frequency
+#    'internal':False                           #Is internal (eDP or LVDS)
+#  }
+def get_xrandr_info():
+	devices=[]
+	current_device=None
+
+	#Parse xrandr lines
+	for line in subprocess.check_output(['xrandr']).decode('ascii','ignore').strip().split('\n'):
+		line=line.rstrip()
+
+		#Display detail line
+		if current_device is not None and line.startswith(' '):
+			line=line.strip().split()
+
+			#Convert resolutions
+			resolution=[]
+			for entry in line[0].split('x'):
+				digits=get_from_string_left(entry)
+				if len(digits)>0:
+					resolution.append(int(digits))
+			if len(resolution)!=2:
+				resolution=None
+
+			#Convert Frequencies
+			frequencies=[]
+			for entry in line[1:]:
+				set_active=entry.endswith('*')
+				digits=get_from_string_left(entry)
+				if len(digits)>0:
+					digits=float(digits)
+					frequencies.append(digits)
+					current_device['frequency']=digits
+			current_device['modes'].append({'resolution':resolution,'frequencies':frequencies})
+
+		#Diplay line
+		elif line.find('connected')>=0:
+			if current_device is not None:
+				devices.append(current_device)
+			line=line.strip().split()
+
+			#Check if primary device
+			primary=line[2]=='primary'
+
+			#Figure out active and current setting
+			active=None
+			try:
+				active_str=line[2]
+				if primary:
+					active_str=line[3]
+				w,h,x,y=parse.parse('{}x{}+{}+{}',active_str)
+				active={'w':int(w),'h':int(h),'x':int(x),'y':int(y)}
+			except Exception:
+				pass
+
+			#Get name and figure out if internal:
+			name=line[0]
+			internal=name.startswith('eDP') or name.startswith('LVDS')
+
+			#Set new current device
+			current_device={
+				'name':name,
+				'state':line[1],
+				'primary':primary,
+				'active':active,
+				'modes':[],
+				'frequency':None,
+				'internal':internal
+				}
+
+	#Added last listed device (loop breaks before this)
+	if current_device is not None:
+		devices.append(current_device)
+
+	return devices
+
+#Gets lid info from /proc.
+#  Returns an array of booleans.
+def get_lid_info():
+	dpath='/proc/acpi/button/lid/'
+	lids=[]
+	for fname in os.listdir(dpath):
+		fpath=os.path.join(dpath,fname,'state')
+		fd=open(fpath,'rb')
+		data=fd.read().decode('ascii','ignore').strip()
+		fd.close()
+		data=data.split(':')
+		if len(data)==2 and data[0].strip()=='state':
+			opened=data[1].strip()
+			if opened=='closed':
+				opened=False
+			elif opened=='open':
+				opened=True
+			else:
+				opened=None
+			lids.append(opened)
+	return lids
+
+#Uses xrandr to set the state of a given device.
+#  Value should be a boolean.
+def set_device_state(name,value):
+	value_str='--off'
+	if value:
+		value_str='--auto'
+	try:
+		subprocess.check_output(['xrandr','--output',name,value_str])
+	except Exception as error:
+		print(error)
+
+#Uses xrandr to set the primary display flag of a given device.
+#  Value should be a boolean.
+def set_device_primary(name,value):
+	value_str='--noprimary'
+	if value:
+		value_str='--primary'
+	try:
+		subprocess.check_output(['xrandr','--output',name,value_str])
+	except Exception as error:
+		print(error)
+
+#Uses xrandr to set the position of a given device.
+#  Args x and y should be integers.
+def set_device_pos(name,x,y):
+	try:
+		subprocess.check_output(['xrandr','--output',name,'--auto','--pos','%dx%d'%(x,y)])
+	except Exception as error:
+		print(error)
+
+#Uses feh to reset your wallpaper when moving the screen around.
+def set_wallpaper(wallpaper_path):
+	try:
+		if wallpaper_path is not None:
+			subprocess.check_output(['feh','--bg-fill',wallpaper_path])
+	except Exception as error:
+		print(error)
+
+#Gets internal and external device object from xrandr output via
+#  the given names.
+#  Returns internal,external objects (or Nones if they cannot be found).
+def get_internal_external(internal_name,external_name):
+	internal=None
+	external=None
+	for info in get_xrandr_info():
+		if internal is not None and external is not None:
+			break
+		if info['name']==internal_name:
+			internal=info
+		if info['name']==external_name:
+			external=info
+	return internal,external
+
+#Main
+if __name__=='__main__':
+
+	#Validate args
+	if len(sys.argv)<3 or len(sys.argv)>4:
+		print('Usage: %s internal_device external_device [feh_wallpaper_path]')
+		print('  Example: %s eDP1 DP1 /home/mittens/Pictures/catbox.png')
+		exit(-1)
+
+	#Device names to use for internal and external
+	internal_name=sys.argv[1]
+	external_name=sys.argv[2]
+
+	#Path to whatever wallpaper is used (to use with feh)
+	wallpaper_path=None
+	if len(sys.argv)==4:
+		wallpaper_path=sys.argv[3]
+		if not os.path.exists(wallpaper_path):
+			print('Wallpaper "%s" does not exist.'%wallpaper_path)
+			exit(-2)
+
+	#Variable used to keep track of if we changed things
+	have_changed=False
+
+	#Daemon loop
+	while True:
+
+		#Give the cpu a break
+		time.sleep(1)
+
+		#Get the lid check
+		#  If one lid is open, they all are...how often are
+		#  we going to have more than one lid?
+		lid_is_open=False
+		for opened in get_lid_info():
+			if opened:
+				lid_is_open=True
+				break
+
+		#Get the two devices
+		internal,external=get_internal_external(internal_name,external_name)
+
+		#Internal device isn't valid - exit
+		if internal is None:
+			print('Could not find internal "%s".'%internal)
+			exit(-3)
+
+		#External device isn't valid - exit
+		if external is None:
+			print('Could not find external "%s".'%external)
+			exit(-4)
+
+		#For debugging...
+		#status_str='lid: %d|have_changed: %d|int_act: %d|int_pri: %d|ext_act: %d|ext_pri: %d|ext_state: %s'%(lid_is_open,have_changed,internal['active'] is not None,internal['primary'],external['active'] is not None,external['primary'],external['state'])
+
+		#No external device connected
+		if external['state']=='disconnected':
+
+			#Internal isn't primary or we've changed something (aka, activated the external screen)
+			if not internal['primary'] or have_changed:
+				print('External display was unplugged!')
+				set_device_state(internal_name,True)
+				set_device_pos(external_name,0,0)
+				set_device_primary(external_name,False)
+				set_device_primary(internal_name,True)
+				set_wallpaper(wallpaper_path)
+				have_changed=False
+
+		#External device is plugged in
+		else:
+
+			#Lid is open, or we came from an unplugged state, and either the internal display isn't active or isn't primary
+			#  So we'll turn the internal display on, make it primary, and extend to the external display (to the right).
+			if (lid_is_open or not have_changed) and (internal['active'] is None or not internal['primary']):
+				print('Lid is open and screen is not active!')
+				set_device_state(internal_name,True)
+				internal,external=get_internal_external(internal_name,external_name)
+				set_device_pos(external_name,internal['active']['w'],0)
+				set_device_primary(external_name,False)
+				set_device_primary(internal_name,True)
+				set_wallpaper(wallpaper_path)
+				have_changed=True
+
+			#Lid is closed, or we came from an unplugged state, and either the internal display is active or is primary.
+			#  So we'll turn the internal display off and turn the external display on and primary.
+			elif (not lid_is_open or not have_changed) and (internal['active'] is not None or internal['primary']):
+				print('Lid is closed and screen is active!')
+				set_device_state(internal_name,False)
+				set_device_state(external_name,True)
+				internal,external=get_internal_external(internal_name,external_name)
+				set_device_pos(external_name,0,0)
+				set_device_primary(internal_name,False)
+				set_device_primary(external_name,True)
+				set_wallpaper(wallpaper_path)
+				have_changed=True
