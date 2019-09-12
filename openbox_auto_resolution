@@ -7,6 +7,7 @@ Dependencies:
   sudo pip3 install parse
 '''
 
+import json
 import os
 import parse
 import pprint
@@ -131,36 +132,6 @@ def get_lid_info():
 			lids.append(opened)
 	return lids
 
-#Uses xrandr to set the state of a given device.
-#  Value should be a boolean.
-def set_device_state(name,value):
-	value_str='--off'
-	if value:
-		value_str='--auto'
-	try:
-		subprocess.check_output(['xrandr','--output',name,value_str])
-	except Exception as error:
-		print(error)
-
-#Uses xrandr to set the primary display flag of a given device.
-#  Value should be a boolean.
-def set_device_primary(name,value):
-	value_str='--noprimary'
-	if value:
-		value_str='--primary'
-	try:
-		subprocess.check_output(['xrandr','--output',name,value_str])
-	except Exception as error:
-		print(error)
-
-#Uses xrandr to set the position of a given device.
-#  Args x and y should be integers.
-def set_device_pos(name,x,y):
-	try:
-		subprocess.check_output(['xrandr','--output',name,'--auto','--pos','%dx%d'%(x,y)])
-	except Exception as error:
-		print(error)
-
 #Uses feh to reset your wallpaper when moving the screen around.
 def set_wallpaper(wallpaper_path):
 	try:
@@ -184,8 +155,52 @@ def get_internal_external(internal_name,external_name):
 			external=info
 	return internal,external
 
+def set_xrandr(name,state=True,primary=None,mode=None,offset=None,pos=None,custom=[]):
+	args=['xrandr','--output',name]
+
+	if state is not None:
+		if state:
+			args.append('--auto')
+		else:
+			args.append('--off')
+
+	if mode is not None:
+		args.append('--mode')
+		args.append(mode)
+
+	if primary is not None:
+		if primary:
+			args.append('--primary')
+		else:
+			args.append('--noprimary')
+
+	if pos is not None:
+		args.append('--pos')
+		args.append('%dx%d'%pos)
+
+	if type(custom) is list:
+		args+=custom
+
+	try:
+		print('"%s"'%'" "'.join(args))
+		subprocess.check_output(args)
+	except Exception as error:
+		print(error)
+
 #Main
 if __name__=='__main__':
+
+	config_fpath='~/.config/openbox_auto_resolution.conf'
+	try:
+		fd=open(os.path.expanduser(config_fpath),'r')
+		config=fd.read()
+		fd.close()
+		config=json.loads(config)
+		for device in config['devices']:
+			if 'custom' not in config['devices'][device]:
+				config['devices'][device]['custom']=[]
+	except FileNotFoundError as error:
+		config={'devices':{}}
 
 	#Validate args
 	if len(sys.argv)<3 or len(sys.argv)>4:
@@ -196,6 +211,10 @@ if __name__=='__main__':
 	#Device names to use for internal and external
 	internal_name=sys.argv[1]
 	external_name=sys.argv[2]
+	if internal_name not in config['devices']:
+		config['devices'][internal_name]={'mode':None,'custom':[]}
+	if external_name not in config['devices']:
+		config['devices'][external_name]={'mode':None,'custom':[]}
 
 	#Path to whatever wallpaper is used (to use with feh)
 	wallpaper_path=None
@@ -237,7 +256,7 @@ if __name__=='__main__':
 			exit(-4)
 
 		#For debugging...
-		#status_str='lid: %d|have_changed: %d|int_act: %d|int_pri: %d|ext_act: %d|ext_pri: %d|ext_state: %s'%(lid_is_open,have_changed,internal['active'] is not None,internal['primary'],external['active'] is not None,external['primary'],external['state'])
+		status_str='lid: %d|have_changed: %d|int_act: %d|int_pri: %d|ext_act: %d|ext_pri: %d|ext_state: %s'%(lid_is_open,have_changed,internal['active'] is not None,internal['primary'],external['active'] is not None,external['primary'],external['state'])
 
 		#No external device connected
 		if external['state']=='disconnected':
@@ -245,10 +264,8 @@ if __name__=='__main__':
 			#Internal isn't primary or we've changed something (aka, activated the external screen)
 			if not internal['primary'] or have_changed:
 				print('External display was unplugged!')
-				set_device_state(internal_name,True)
-				set_device_pos(external_name,0,0)
-				set_device_primary(external_name,False)
-				set_device_primary(internal_name,True)
+				set_xrandr(external_name,state=False,primary=False,custom=config['devices'][internal_name]['custom'])
+				set_xrandr(internal_name,state=True,primary=True,mode=config['devices'][internal_name]['mode'],custom=config['devices'][external_name]['custom'])
 				set_wallpaper(wallpaper_path)
 				have_changed=False
 
@@ -258,12 +275,10 @@ if __name__=='__main__':
 			#Lid is open, or we came from an unplugged state, and either the internal display isn't active or isn't primary
 			#  So we'll turn the internal display on, make it primary, and extend to the external display (to the right).
 			if (lid_is_open or not have_changed) and (internal['active'] is None or not internal['primary']):
-				print('Lid is open and screen is not active!')
-				set_device_state(internal_name,True)
+				print('Lid is open and screen is not active! %s'%status_str)
+				set_xrandr(internal_name,state=True,primary=True,mode=config['devices'][internal_name]['mode'],custom=config['devices'][internal_name]['custom'])
 				internal,external=get_internal_external(internal_name,external_name)
-				set_device_pos(external_name,internal['active']['w'],0)
-				set_device_primary(external_name,False)
-				set_device_primary(internal_name,True)
+				set_xrandr(external_name,pos=(internal['active']['w'],0),custom=config['devices'][external_name]['custom'])
 				set_wallpaper(wallpaper_path)
 				have_changed=True
 
@@ -271,11 +286,7 @@ if __name__=='__main__':
 			#  So we'll turn the internal display off and turn the external display on and primary.
 			elif (not lid_is_open or not have_changed) and (internal['active'] is not None or internal['primary']):
 				print('Lid is closed and screen is active!')
-				set_device_state(internal_name,False)
-				set_device_state(external_name,True)
-				internal,external=get_internal_external(internal_name,external_name)
-				set_device_pos(external_name,0,0)
-				set_device_primary(internal_name,False)
-				set_device_primary(external_name,True)
+				set_xrandr(internal_name,state=False,custom=config['devices'][internal_name]['custom'])
+				set_xrandr(external_name,state=True,primary=True,mode=config['devices'][external_name]['mode'],custom=config['devices'][external_name]['custom'])
 				set_wallpaper(wallpaper_path)
 				have_changed=True
