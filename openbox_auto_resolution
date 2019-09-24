@@ -225,7 +225,7 @@ if __name__=='__main__':
 			exit(-2)
 
 	#Variable used to keep track of if we changed things
-	have_changed=False
+	have_changed=True
 
 	#Daemon loop
 	while True:
@@ -257,6 +257,7 @@ if __name__=='__main__':
 
 		#For debugging...
 		status_str='lid: %d|have_changed: %d|int_act: %d|int_pri: %d|ext_act: %d|ext_pri: %d|ext_state: %s'%(lid_is_open,have_changed,internal['active'] is not None,internal['primary'],external['active'] is not None,external['primary'],external['state'])
+		#print(status_str)
 
 		#No external device connected
 		if external['state']=='disconnected':
